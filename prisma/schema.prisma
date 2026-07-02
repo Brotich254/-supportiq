@@ -1,0 +1,167 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pgvector(map: "vector")]
+}
+
+// ─── ORGANIZATIONS (tenants) ──────────────────────────────
+
+model Organization {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  widgetColor String   @default("#6366f1")
+  greeting    String   @default("Hi! How can I help you today?")
+  apiKey      String   @unique  // used by embed script
+  plan        Plan     @default(FREE)
+  createdAt   DateTime @default(now())
+
+  members     OrgMember[]
+  tickets     Ticket[]
+  documents   KnowledgeDoc[]
+  conversations Conversation[]
+}
+
+enum Plan {
+  FREE      // 100 conversations/month
+  PRO       // 2000 conversations/month
+  ENTERPRISE
+}
+
+model OrgMember {
+  id     String @id @default(cuid())
+  orgId  String
+  userId String
+  role   OrgRole @default(AGENT)
+
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, userId])
+}
+
+enum OrgRole {
+  OWNER
+  ADMIN
+  AGENT
+}
+
+// ─── USERS (agents / admins) ──────────────────────────────
+
+model User {
+  id        String   @id @default(cuid())
+  name      String
+  email     String   @unique
+  password  String?
+  avatar    String?
+  createdAt DateTime @default(now())
+
+  memberships  OrgMember[]
+  assignedTickets Ticket[] @relation("AssignedAgent")
+  messages     Message[]
+}
+
+// ─── KNOWLEDGE BASE ───────────────────────────────────────
+
+model KnowledgeDoc {
+  id        String   @id @default(cuid())
+  orgId     String
+  title     String
+  content   String   @db.Text
+  source    DocSource @default(MANUAL)
+  url       String?
+  embedding Unsupported("vector(1536)")?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+}
+
+enum DocSource {
+  MANUAL
+  URL
+  FILE
+  FAQ
+}
+
+// ─── CONVERSATIONS & TICKETS ──────────────────────────────
+
+model Conversation {
+  id          String             @id @default(cuid())
+  orgId       String
+  visitorId   String             // anonymous or email
+  visitorEmail String?
+  visitorName  String?
+  status      ConversationStatus @default(BOT)
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  messages Message[]
+  ticket   Ticket?
+
+  @@index([orgId, status])
+  @@index([visitorId])
+}
+
+enum ConversationStatus {
+  BOT        // AI is handling
+  ESCALATED  // waiting for human agent
+  OPEN       // agent is handling
+  RESOLVED
+  CLOSED
+}
+
+model Message {
+  id             String      @id @default(cuid())
+  conversationId String
+  role           MessageRole
+  content        String      @db.Text
+  agentId        String?     // set if role=AGENT
+  isAI           Boolean     @default(false)
+  confidence     Float?      // AI confidence 0-1
+  createdAt      DateTime    @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  agent        User?        @relation(fields: [agentId], references: [id])
+
+  @@index([conversationId])
+}
+
+enum MessageRole {
+  VISITOR
+  AI
+  AGENT
+  SYSTEM
+}
+
+model Ticket {
+  id             String       @id @default(cuid())
+  orgId          String
+  conversationId String       @unique
+  assigneeId     String?
+  priority       Priority     @default(MEDIUM)
+  status         TicketStatus @default(OPEN)
+  subject        String
+  tags           String[]
+  csat           Int?         // 1-5 satisfaction score
+  createdAt      DateTime     @default(now())
+  resolvedAt     DateTime?
+
+  org          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id])
+  assignee     User?        @relation("AssignedAgent", fields: [assigneeId], references: [id])
+
+  @@index([orgId, status])
+  @@index([orgId, assigneeId])
+}
+
+enum Priority { LOW MEDIUM HIGH URGENT }
+enum TicketStatus { OPEN IN_PROGRESS RESOLVED CLOSED }
